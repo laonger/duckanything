@@ -1,6 +1,18 @@
 [package]
-name = "DuckAnything"
+name = "duckanything"
 version = "0.1.0"
 edition = "2024"
+description = "Let any MCP client query local data files (CSV/JSON/Parquet) via DuckDB"
+license = "MIT"
 
 [dependencies]
+duckdb = { version = "1.1", features = ["bundled", "json", "parquet"] }
+rust-mcp-sdk = { version = "2.0", default-features = false, features = ["server", "stdio", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

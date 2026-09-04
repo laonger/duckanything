@@ -16,6 +16,7 @@ serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rust-mcp-axum = "2.0.0"
 
 [dev-dependencies]
 tempfile = "3"

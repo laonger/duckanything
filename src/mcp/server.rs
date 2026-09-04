@@ -65,12 +65,9 @@ impl ServerHandler for DuckServerHandler {
     }
 }
 
-/// Build and run the MCP server over stdio until the client disconnects.
-pub async fn run_server(config: &Config) -> Result<(), DuckAnythingError> {
-    let engine = Arc::new(Engine::new(config)?);
-    let handler = DuckServerHandler::new(engine);
-
-    let server_details = ServerDetails {
+/// Server identity, capabilities and instructions shared by stdio and HTTP transports.
+fn build_server_details() -> ServerDetails {
+    ServerDetails {
         server_info: Implementation {
             name: "duckanything".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -88,17 +85,53 @@ pub async fn run_server(config: &Config) -> Result<(), DuckAnythingError> {
             "Mount local CSV/JSON/Parquet files as DuckDB views, then run read-only SQL."
                 .into(),
         ),
-    };
+    }
+}
+
+/// Build and run the MCP server over stdio until the client disconnects.
+pub async fn run_server(config: &Config) -> Result<(), DuckAnythingError> {
+    let engine = Arc::new(Engine::new(config)?);
+    let handler = DuckServerHandler::new(engine);
 
     let transport = StdioTransport::new(TransportOptions::default())
         .map_err(|e| DuckAnythingError::Io(std::io::Error::other(e.to_string())))?;
 
     let server: Arc<ServerRuntime> = server_runtime::create_server(McpServerOptions {
-        server_details,
+        server_details: build_server_details(),
         transport,
         handler: handler.to_mcp_server_handler(),
         message_observer: None,
     });
+
+    server
+        .start()
+        .await
+        .map_err(|e| DuckAnythingError::Io(std::io::Error::other(e.to_string())))?;
+    Ok(())
+}
+
+/// Build and run the MCP server over HTTP: Streamable HTTP at `/mcp` and SSE at `/sse`.
+pub async fn run_http_server(
+    config: &Config,
+    host: &str,
+    port: u16,
+) -> Result<(), DuckAnythingError> {
+    let engine = Arc::new(Engine::new(config)?);
+    let handler = DuckServerHandler::new(engine);
+
+    tracing::info!(
+        "MCP HTTP server listening on http://{host}:{port} (Streamable HTTP: http://{host}:{port}/mcp, SSE: http://{host}:{port}/sse)"
+    );
+
+    let server = rust_mcp_axum::create_axum_server(
+        build_server_details(),
+        handler.to_mcp_server_handler(),
+        rust_mcp_axum::AxumServerOptions {
+            host: host.into(),
+            port,
+            ..Default::default()
+        },
+    );
 
     server
         .start()
@@ -131,5 +164,22 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed[0]["region"], "east");
         assert_eq!(parsed[1]["amount"], 20);
+    }
+
+    /// Smoke test: the HTTP server actually binds and listens on the given port.
+    #[tokio::test]
+    async fn http_server_binds_and_listens() {
+        let config = Config::default();
+        let port = 18923u16;
+        let task = tokio::spawn(async move {
+            let _ = run_http_server(&config, "127.0.0.1", port).await;
+        });
+
+        // Give the server a moment to bind the listener.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let connected = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+        task.abort();
+
+        assert!(connected, "HTTP server should be listening on port {port}");
     }
 }

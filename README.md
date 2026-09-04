@@ -56,7 +56,9 @@ west   20
 ## MCP Server 模式
 
 ```sh
-duckanything serve
+duckanything serve                    # 仅 stdio（默认，行为不变）
+duckanything serve --http             # 同时启用 HTTP：Streamable HTTP + SSE
+duckanything serve --http --host 0.0.0.0 --port 8080
 ```
 
 通过 stdio 通信，客户端配置示例（以 Claude Desktop 为例）：
@@ -71,6 +73,40 @@ duckanything serve
   }
 }
 ```
+
+### HTTP 传输（`--http`）
+
+`serve --http` 同时暴露两个端点（默认绑定 `127.0.0.1:8080`）：
+
+| 端点 | 协议 | 客户端配置 `url` |
+|------|------|------------------|
+| `http://127.0.0.1:8080/mcp` | Streamable HTTP（新客户端） | `"url": "http://127.0.0.1:8080/mcp"` |
+| `http://127.0.0.1:8080/sse` | SSE（旧客户端） | `"url": "http://127.0.0.1:8080/sse"` |
+
+客户端配置示例：
+
+```json
+{
+  "mcpServers": {
+    "duckanything": {
+      "url": "http://127.0.0.1:8080/mcp",
+      "transport": "streamable-http"
+    }
+  }
+}
+```
+
+curl 冒烟示例（Streamable HTTP）：
+
+```sh
+curl -s -X POST http://127.0.0.1:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Mcp-Method: tools/list' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}'
+```
+
+> **注意**：HTTP 请求同样受 2026-07-28 协议约束，`params._meta` 必须携带 `io.modelcontextprotocol/` 前缀键，否则返回 `-32601`；Streamable HTTP 的 POST 还需带 `Mcp-Method: <method>` 头（缺失返回 `-32020`）。
 
 暴露给 MCP 客户端的四个工具：
 

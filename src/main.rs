@@ -16,7 +16,7 @@ fn main() {
     core::logging::init();
     let cli = cli::Cli::parse();
     let exit_code = match cli.command {
-        cli::Command::Serve => cmd_serve(),
+        cli::Command::Serve { http, ref host, port } => cmd_serve(http, host, port),
         cli::Command::Query { ref file, ref sql } => cmd_query(file, sql, cli.format),
         cli::Command::Describe { ref file } => cmd_describe(file),
     };
@@ -25,12 +25,21 @@ fn main() {
     }
 }
 
-fn cmd_serve() -> i32 {
-    match Config::from_env(None).and_then(|config| {
-        tokio::runtime::Runtime::new()
-            .map_err(|e| DuckAnythingError::Io(std::io::Error::other(e)))?
-            .block_on(mcp::server::run_server(&config))
-    }) {
+fn cmd_serve(http: bool, host: &str, port: u16) -> i32 {
+    let config = match Config::from_env(None) {
+        Ok(c) => c,
+        Err(e) => return fail(&e),
+    };
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(r) => r,
+        Err(e) => return fail(&DuckAnythingError::Io(std::io::Error::other(e))),
+    };
+    let result = if http {
+        runtime.block_on(mcp::server::run_http_server(&config, host, port))
+    } else {
+        runtime.block_on(mcp::server::run_server(&config))
+    };
+    match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("error: {e}");

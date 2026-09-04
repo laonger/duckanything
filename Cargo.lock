@@ -533,6 +533,7 @@ dependencies = [
 name = "duckanything"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "duckdb",
  "rust-mcp-sdk",

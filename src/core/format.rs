@@ -156,8 +156,9 @@ fn json_value_to_string(value: &serde_json::Value) -> String {
 // Table / Markdown / CSV
 // ---------------------------------------------------------------------------
 
-/// Text rendering of a cell (used by Table, Markdown and CSV).
-fn cell_to_string(cell: &Cell) -> String {
+/// Text rendering of a cell (used by Table, Markdown and CSV; also by the
+/// CLI `describe` output).
+pub fn cell_to_string(cell: &Cell) -> String {
     match cell {
         Cell::Null => "NULL".to_string(),
         Cell::Bool(b) => b.to_string(),

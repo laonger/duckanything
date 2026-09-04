@@ -6,6 +6,7 @@ description = "Let any MCP client query local data files (CSV/JSON/Parquet) via 
 license = "MIT"
 
 [dependencies]
+async-trait = "0.1"
 duckdb = { version = "1.1", features = ["bundled", "json", "parquet"] }
 rust-mcp-sdk = { version = "2.0", default-features = false, features = ["server", "stdio", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }

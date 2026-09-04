@@ -1,39 +1,39 @@
-# DuckAnything — AGENTS.md
+# AGENTS.md
 
-## Project Identity
+## What this is
 
-Rust DuckDB MCP server. Clients pass a file path (CSV, Parquet, JSON, etc.) and query/manipulate it via DuckDB SQL over the MCP protocol.
+`duckanything`: Rust CLI + MCP server that mounts local CSV/JSON/Parquet files as read-only DuckDB views and runs SQL against them. One binary, four subcommands: `serve` (MCP over stdio), `query`, `describe`.
 
-Two modes (per README):
-- **Server mode**: runs as an MCP protocol server
-- **CLI mode**: runs as a CLI tool
+## Commands
 
-## Current State
-
-**Early stage.** `Cargo.toml` and `src/main.rs` (Hello World boilerplate) exist. No dependencies, no tests, no CI, no commits yet.
-
-## Build & Run
-
-```bash
+```sh
 cargo build
-cargo run
+cargo test            # 47 unit tests, fast, no external services needed
+cargo run -- query <file> "SELECT ..."          # run one SQL query
+cargo run -- describe <file>                    # print schema
+cargo run -- serve                              # MCP stdio server
 ```
 
-## Tech Stack
+- Query output format: `--format json|table|markdown|csv` (default `table`).
+- The view name is the file stem: `/tmp/sales.csv` → `FROM sales` (not `FROM sales.csv`).
+- Unsupported extensions are rejected with a clear error listing supported formats.
 
-- **Rust edition 2024** (`edition = "2024"` in Cargo.toml). Requires a Rust toolchain that supports it (1.85+). Do not downgrade to edition 2021.
-- **Toolchain**: rustc 1.96.0, cargo 1.96.0 (as of repo setup)
-- Expected key deps: `duckdb` crate, `mcp` or similar server SDK
+### Environment quirk (this machine)
 
-## Repo Conventions
+`CARGO_TARGET_DIR` is set, so build artifacts land in `$CARGO_TARGET_DIR/debug/` (here: `/Users/laonger/.cargo/temp/debug/duckanything`), **not** `./target`. Don't be confused when `target/` doesn't exist after a successful build.
 
-- `.visp/rules/` for repo-local visp rules; `.visp/skills/` for custom skills (both currently empty).
-- `.gitignore` only contains `/target` — extend as needed.
-- No Cargo.lock tracked yet (no commits).
+## MCP layer gotchas (rust-mcp-sdk 2.0)
 
-## What to Remember
+Hard-earned findings from tracing the SDK source — these are not obvious from our code:
 
-- README.md is the authoritative project description (currently bilingual CN/EN).
-- Edition 2024 is non-negotiable — don't rewrite to 2021.
-- MCP tool schemas require strict JSON Schema; DuckDB results can contain arbitrary types — plan serialization carefully.
-- DuckDB version matters for file format support (Parquet, CSV, Excel, etc.).
+- **Protocol `2026_07_28` removed `initialize`.** The SDK's schema crate defaults to the `latest` (2026-07-28) protocol, where `InitializeRequest` no longer exists (replaced by `server/discover`). A legacy client sending `initialize` falls through the untagged serde enum to `Custom` and gets `-32601 "No handler is implemented for custom requests."` — the server *looks* broken but isn't. Options: implement `handle_custom_request` on the handler for legacy handshake, or enable an older schema feature (`2025_06_18` etc.) on `rust-mcp-schema`.
+- SDK dependency is pinned with `default-features = false, features = ["server", "stdio", "macros"]` on purpose — defaults pull in `auth` (reqwest/jsonwebtoken) and HTTP transports we don't need.
+- `ServerHandler` impls require `#[async_trait]` (hence the `async-trait` dep).
+- Tool handlers return `CallToolResult`; `handle_call_tool_request` must wrap them in `ServerResult::CallToolResult(...)` (compile error otherwise).
+
+## Layout
+
+- `src/main.rs` — clap entrypoint dispatching subcommands.
+- `src/core/` — DuckDB engine, errors, output formatting, security config. Engine is sync; mount/query don't need tokio.
+- `src/mcp/` — MCP server assembly (`server.rs`) and tool enum (`tools.rs`). Tools convert from `CallToolRequestParams` via `TryFrom` and call into the shared `Engine`.
+- Tests use `tempfile` for fixtures; MCP handler tests exercise the engine boundary, not the stdio wire.

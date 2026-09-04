@@ -83,7 +83,12 @@ duckanything serve
 
 典型流程：AI 先调 `load_file` 挂载文件 → `describe` 看结构 → `run_sql` 查询。
 
-> **注意**：当前基于 rust-mcp-sdk 2.0（MCP 协议 2026-07-28），该版本协议已用 `server/discover` 取代 `initialize` 握手。部分仍发送 `initialize` 的旧版 MCP 客户端可能握手失败，需等客户端适配新版协议。
+> **注意（协议版本兼容性）**：当前基于 rust-mcp-sdk 2.0（MCP 协议 2026-07-28），与旧版协议有两处不兼容，不满足时请求会返回 `-32601 "No handler is implemented for custom requests."`（服务器本身没有问题）：
+>
+> 1. `initialize` 握手已被 `server/discover` 取代，发送 `initialize` 的旧版客户端会握手失败；
+> 2. **所有**请求（含 `tools/call`）的 `params._meta` 必须携带带 `io.modelcontextprotocol/` 前缀的键：`io.modelcontextprotocol/clientCapabilities` 与 `io.modelcontextprotocol/protocolVersion`，缺失同样报 -32601。
+>
+> 旧版 MCP 客户端需升级到支持 2026-07-28 协议的版本。
 
 ## 开发
 

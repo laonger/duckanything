@@ -244,7 +244,31 @@ impl Engine {
     /// [`has_multiple_statements`]); `duckdb-rs`'s `prepare` executes
     /// intermediate statements, so relying on it alone would be unsafe.
     pub fn run_query(&self, sql: &str) -> Result<QueryResult, DuckAnythingError> {
-        tracing::debug!(sql = %sql, "run_query");
+        self.run_query_inner(sql, self.timeout_secs)
+    }
+
+    /// Runs a read-only SQL query with an explicit timeout (in seconds),
+    /// overriding the configured default for this single call.
+    ///
+    /// Semantics are identical to [`Engine::run_query`] except the wall-clock
+    /// timeout value is caller-supplied. Used by the MCP `run_sql` tool so a
+    /// caller can grant a heavier scan more time per-query.
+    pub fn run_query_with_timeout(
+        &self,
+        sql: &str,
+        timeout_secs: u64,
+    ) -> Result<QueryResult, DuckAnythingError> {
+        self.run_query_inner(sql, timeout_secs)
+    }
+
+    /// Shared implementation of [`Engine::run_query`] /
+    /// [`Engine::run_query_with_timeout`] with a parameterized timeout.
+    fn run_query_inner(
+        &self,
+        sql: &str,
+        timeout: u64,
+    ) -> Result<QueryResult, DuckAnythingError> {
+        tracing::debug!(sql = %sql, timeout_secs = timeout, "run_query");
         if !is_readonly_sql(sql) {
             return Err(DuckAnythingError::ReadOnlyViolation(sql.to_string()));
         }
@@ -259,7 +283,6 @@ impl Engine {
             DuckAnythingError::Sql("engine connection is busy".to_string())
         })?;
         let interrupt = guard.interrupt.clone();
-        let timeout = self.timeout_secs;
         let sql = sql.to_string();
 
         let (tx, rx) = channel();
@@ -1084,6 +1107,24 @@ mod tests {
         // The mounted view must still be queryable (rebuild path re-mounts).
         let result = engine.run_query("SELECT * FROM data").unwrap();
         assert_eq!(result.rows.len(), 3);
+    }
+
+    #[test]
+    fn run_query_with_timeout_fast_query_succeeds() {
+        // A tiny timeout only fires when a query actually exceeds it; a fast
+        // query completes normally even with a 1s limit.
+        let engine = Engine::new(&Config::default()).unwrap();
+        let result = engine.run_query_with_timeout("SELECT 1 AS x", 1).unwrap();
+        assert_eq!(result.rows[0][0], Cell::Int(1));
+    }
+
+    #[test]
+    fn run_query_with_timeout_slow_query_times_out() {
+        let engine = Engine::new(&Config::default()).unwrap();
+        let err = engine
+            .run_query_with_timeout("SELECT count(*) FROM range(10000000000)", 1)
+            .unwrap_err();
+        assert!(matches!(err, DuckAnythingError::Timeout(1)), "{err:?}");
     }
 
     #[test]

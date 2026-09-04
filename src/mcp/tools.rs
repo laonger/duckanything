@@ -42,6 +42,10 @@ const DEFAULT_MAX_ROWS: usize = 100;
 /// Values with magnitude >= this are rendered as strings in JSON output.
 const JS_SAFE_INT: u64 = 1 << 53;
 
+/// Upper bound (seconds) for a per-query `timeout_secs` override. Values above
+/// this are silently clamped to prevent a caller from pinning the engine.
+const MAX_TOOL_TIMEOUT_SECS: u64 = 600;
+
 // ---------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------
@@ -174,6 +178,10 @@ pub struct RunSqlTool {
     /// `u64` rather than `usize`: the SDK's `JsonSchema` derive does not
     /// recognize `usize` and would treat it as a nested struct.
     max_rows: Option<u64>,
+    /// Max seconds this query may run, overriding the server default (30).
+    /// Use when a large scan legitimately needs longer; keep small for
+    /// interactive queries.
+    timeout_secs: Option<u64>,
 }
 
 impl RunSqlTool {
@@ -183,11 +191,27 @@ impl RunSqlTool {
         // formatting API takes `usize`, and a row limit that does not fit in
         // `usize` is not realistic, so a plain cast is fine.
         let max_rows = self.max_rows.unwrap_or(DEFAULT_MAX_ROWS as u64) as usize;
+        // Per-query timeout override: clamp to a sane upper bound so a caller
+        // cannot pin the engine with an absurd value. `None`/0 → server default.
+        let timeout_secs = self
+            .timeout_secs
+            .filter(|&t| t > 0)
+            .map(|t| t.min(MAX_TOOL_TIMEOUT_SECS));
         let engine = Arc::clone(engine);
         tokio::task::spawn_blocking(move || {
-            tracing::debug!(tool = "run_sql", sql = %sql, max_rows = max_rows, "call_tool");
+            tracing::debug!(
+                tool = "run_sql",
+                sql = %sql,
+                max_rows = max_rows,
+                timeout_secs = ?timeout_secs,
+                "call_tool"
+            );
             let start = std::time::Instant::now();
-            let mut result = match engine.run_query(&sql) {
+            let result = match timeout_secs {
+                Some(t) => engine.run_query_with_timeout(&sql, t),
+                None => engine.run_query(&sql),
+            };
+            let mut result = match result {
                 Ok(result) => result,
                 Err(err) => {
                     tracing::warn!(tool = "run_sql", error = %err, "call_tool failed");
@@ -468,6 +492,7 @@ mod tests {
         let query = RunSqlTool {
             sql: "SELECT * FROM data".to_string(),
             max_rows: None,
+            timeout_secs: None,
         };
         let result = query.call_tool(&engine).await;
         let env = envelope(&result);
@@ -500,6 +525,7 @@ mod tests {
         let query = RunSqlTool {
             sql: "SELECT * FROM data".to_string(),
             max_rows: Some(1),
+            timeout_secs: None,
         };
         let result = query.call_tool(&engine).await;
         let env = envelope(&result);
@@ -508,5 +534,53 @@ mod tests {
         assert_eq!(env["metadata"]["truncated"], true);
         assert_eq!(env["metadata"]["returned_rows"], 1_i64);
         assert_eq!(env["metadata"]["total_rows"], 2_i64);
+    }
+
+    #[tokio::test]
+    async fn run_sql_timeout_returns_actionable_error() {
+        let engine = Arc::new(Engine::new(&Config::default()).unwrap());
+        // A recursive CTE that will not finish within 1s (no table needed).
+        let query = RunSqlTool {
+            sql: "WITH RECURSIVE t(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM t WHERE x < 100000000) SELECT count(*) FROM t".to_string(),
+            max_rows: None,
+            timeout_secs: Some(1),
+        };
+        let result = query.call_tool(&engine).await;
+        let env = envelope(&result);
+        assert_eq!(env["ok"], false, "expected timeout failure, got: {env}");
+        let err = env["error"].as_str().unwrap();
+        assert!(err.contains("timed out after 1s"), "error: {err}");
+        assert!(err.contains("approx_count_distinct"), "error: {err}");
+    }
+
+    #[tokio::test]
+    async fn run_sql_timeout_secs_clamped_to_max() {
+        let engine = Arc::new(Engine::new(&Config::default()).unwrap());
+        // A huge timeout is silently clamped to MAX_TOOL_TIMEOUT_SECS; a fast
+        // query still succeeds (no panic, no hang).
+        let query = RunSqlTool {
+            sql: "SELECT 1".to_string(),
+            max_rows: None,
+            timeout_secs: Some(5000),
+        };
+        let result = query.call_tool(&engine).await;
+        let env = envelope(&result);
+        assert_eq!(env["ok"], true, "run_sql failed: {env}");
+        assert_eq!(env["data"][0]["1"], 1_i64);
+    }
+
+    #[tokio::test]
+    async fn run_sql_zero_timeout_uses_default() {
+        let engine = Arc::new(Engine::new(&Config::default()).unwrap());
+        // timeout_secs = 0 is treated as "use the server default" (not an
+        // immediate timeout), so a fast query succeeds.
+        let query = RunSqlTool {
+            sql: "SELECT 1".to_string(),
+            max_rows: None,
+            timeout_secs: Some(0),
+        };
+        let result = query.call_tool(&engine).await;
+        let env = envelope(&result);
+        assert_eq!(env["ok"], true, "run_sql failed: {env}");
     }
 }

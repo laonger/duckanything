@@ -40,7 +40,13 @@ impl fmt::Display for DuckAnythingError {
                 write!(f, "read-only mode: '{stmt}' is not allowed; only SELECT/WITH/FROM queries")
             }
             DuckAnythingError::Sql(msg) => write!(f, "SQL error: {msg}"),
-            DuckAnythingError::Timeout(secs) => write!(f, "query timed out after {secs}s"),
+            DuckAnythingError::Timeout(secs) => write!(
+                f,
+                "query timed out after {secs}s; the scan was interrupted (partial results are discarded). \
+                 likely causes: full-table aggregation over a large file, or multiple count(DISTINCT ...) on high-cardinality columns. \
+                 try: raise the limit via DUCKANYTHING_TIMEOUT_SECS or --timeout-secs; replace count(DISTINCT col) with approx_count_distinct(col); \
+                 prefer Parquet over CSV; or add WHERE to reduce scanned rows."
+            ),
             DuckAnythingError::Config(msg) => write!(f, "invalid configuration: {msg}"),
         }
     }
@@ -87,6 +93,8 @@ mod tests {
                 "read-only mode",
             ),
             (DuckAnythingError::Timeout(30), "timed out after 30s"),
+            (DuckAnythingError::Timeout(30), "approx_count_distinct"),
+            (DuckAnythingError::Timeout(30), "DUCKANYTHING_TIMEOUT_SECS"),
             (
                 DuckAnythingError::Config("bad".into()),
                 "invalid configuration",

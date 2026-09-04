@@ -82,7 +82,11 @@ fn build_server_details() -> ServerDetails {
         },
         meta: None,
         instructions: Some(
-            "Mount local CSV/JSON/Parquet files as DuckDB views, then run read-only SQL."
+            "Mount local CSV/JSON/Parquet files as DuckDB views, then run read-only SQL.\n\
+             Views use the file stem as the name (e.g. /tmp/sales.csv → FROM sales).\n\
+             Queries have a wall-clock timeout (default 30s); pass timeout_secs on run_sql for heavier scans.\n\
+             Columns are typed (BIGINT/VARCHAR/TIMESTAMP/...): use describe first to check types before functions like date_diff (needs TIMESTAMP/DATE, not BIGINT).\n\
+             count(DISTINCT ...) over high-cardinality columns on large files is slow; prefer approx_count_distinct."
                 .into(),
         ),
     }

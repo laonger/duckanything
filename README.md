@@ -96,17 +96,16 @@ duckanything serve --http --host 0.0.0.0 --port 8080
 }
 ```
 
-curl 冒烟示例（Streamable HTTP）：
+curl 冒烟示例（Streamable HTTP，无需 `Mcp-Method` 头）：
 
 ```sh
 curl -s -X POST http://127.0.0.1:8080/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  -H 'Mcp-Method: tools/list' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}'
 ```
 
-> **注意**：HTTP 请求同样受 2026-07-28 协议约束，`params._meta` 必须携带 `io.modelcontextprotocol/` 前缀键，否则返回 `-32601`；Streamable HTTP 的 POST 还需带 `Mcp-Method: <method>` 头（缺失返回 `-32020`）。
+> **注意**：HTTP 请求同样受 2026-07-28 协议约束，`params._meta` 必须携带 `io.modelcontextprotocol/` 前缀键，否则返回 `-32601`。SDK 要求每个请求带 SEP-2243 头（`Mcp-Method`，`tools/call`/`prompts/get` 还需 `Mcp-Name`）；server 会从请求 body 自动补齐缺失的头，所以裸 curl 也能用。显式带头同样支持，但必须与 body 一致（不一致返回 `-32020`）。`POST /mcp` 直接返回普通 JSON（非 SSE 流）。
 
 暴露给 MCP 客户端的四个工具：
 

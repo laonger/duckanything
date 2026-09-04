@@ -9,7 +9,7 @@ license = "MIT"
 async-trait = "0.1"
 duckdb = { version = "1.1", features = ["bundled", "json", "parquet"] }
 rust-mcp-sdk = { version = "2.0", default-features = false, features = ["server", "stdio", "macros"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync", "net"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -17,6 +17,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rust-mcp-axum = "2.0.0"
+axum = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

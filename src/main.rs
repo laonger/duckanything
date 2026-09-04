@@ -13,6 +13,7 @@ use core::security::Config;
 use core::{engine::Engine, format};
 
 fn main() {
+    core::logging::init();
     let cli = cli::Cli::parse();
     let exit_code = match cli.command {
         cli::Command::Serve => cmd_serve(),

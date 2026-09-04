@@ -71,9 +71,13 @@ impl LoadFileTool {
         let alias = self.alias.clone();
         let engine = Arc::clone(engine);
         tokio::task::spawn_blocking(move || {
+            tracing::debug!(tool = "load_file", file = %file, alias = ?alias, "call_tool");
             let info = match engine.mount_file(Path::new(&file), alias.as_deref()) {
                 Ok(info) => info,
-                Err(err) => return envelope_err(&err),
+                Err(err) => {
+                    tracing::warn!(tool = "load_file", error = %err, "call_tool failed");
+                    return envelope_err(&err);
+                }
             };
             // Supplement the mount result with column name/type info.
             let columns = match engine.describe_view(&info.view_name) {
@@ -122,23 +126,29 @@ impl DescribeTool {
     pub async fn call_tool(&self, engine: &Arc<Engine>) -> CallToolResult {
         let view = self.view.clone();
         let engine = Arc::clone(engine);
-        tokio::task::spawn_blocking(move || match engine.describe_view(&view) {
-            Ok(desc) => {
-                let data = desc
-                    .columns
-                    .iter()
-                    .map(|c| {
-                        serde_json::json!({
-                            "name": c.name,
-                            "type": c.type_name,
-                            "samples": c.samples.iter().map(cell_to_json).collect::<Vec<_>>(),
+        tokio::task::spawn_blocking(move || {
+            tracing::debug!(tool = "describe", view = %view, "call_tool");
+            match engine.describe_view(&view) {
+                Ok(desc) => {
+                    let data = desc
+                        .columns
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "name": c.name,
+                                "type": c.type_name,
+                                "samples": c.samples.iter().map(cell_to_json).collect::<Vec<_>>(),
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>();
-                let metadata = serde_json::json!({ "view_name": desc.view_name });
-                envelope_ok(serde_json::Value::Array(data), metadata)
+                        .collect::<Vec<_>>();
+                    let metadata = serde_json::json!({ "view_name": desc.view_name });
+                    envelope_ok(serde_json::Value::Array(data), metadata)
+                }
+                Err(err) => {
+                    tracing::warn!(tool = "describe", error = %err, "call_tool failed");
+                    envelope_err(&err)
+                }
             }
-            Err(err) => envelope_err(&err),
         })
         .await
         .unwrap_or_else(|join_err| envelope_err_msg(format!("tool execution panicked: {join_err}")))
@@ -175,10 +185,14 @@ impl RunSqlTool {
         let max_rows = self.max_rows.unwrap_or(DEFAULT_MAX_ROWS as u64) as usize;
         let engine = Arc::clone(engine);
         tokio::task::spawn_blocking(move || {
+            tracing::debug!(tool = "run_sql", sql = %sql, max_rows = max_rows, "call_tool");
             let start = std::time::Instant::now();
             let mut result = match engine.run_query(&sql) {
                 Ok(result) => result,
-                Err(err) => return envelope_err(&err),
+                Err(err) => {
+                    tracing::warn!(tool = "run_sql", error = %err, "call_tool failed");
+                    return envelope_err(&err);
+                }
             };
             let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -244,6 +258,7 @@ impl ListFilesTool {
     pub async fn call_tool(&self, engine: &Arc<Engine>) -> CallToolResult {
         let engine = Arc::clone(engine);
         tokio::task::spawn_blocking(move || {
+            tracing::debug!(tool = "list_files", "call_tool");
             let views = engine.list_views();
             let data = views
                 .iter()

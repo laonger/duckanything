@@ -149,6 +149,30 @@ impl Engine {
         path: &Path,
         alias: Option<&str>,
     ) -> Result<MountInfo, DuckAnythingError> {
+        match self.mount_file_impl(path, alias) {
+            Ok(info) => {
+                tracing::info!(
+                    view = %info.view_name,
+                    path = %info.file_path.display(),
+                    format = ?info.format,
+                    "mounted view"
+                );
+                Ok(info)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "mount failed");
+                Err(e)
+            }
+        }
+    }
+
+    /// Inner mount implementation; [`Engine::mount_file`] adds logging around
+    /// this without touching the error-handling logic.
+    fn mount_file_impl(
+        &self,
+        path: &Path,
+        alias: Option<&str>,
+    ) -> Result<MountInfo, DuckAnythingError> {
         validate_path(path, self.allow_dir.as_deref())?;
         let ext = path
             .extension()
@@ -220,6 +244,7 @@ impl Engine {
     /// [`has_multiple_statements`]); `duckdb-rs`'s `prepare` executes
     /// intermediate statements, so relying on it alone would be unsafe.
     pub fn run_query(&self, sql: &str) -> Result<QueryResult, DuckAnythingError> {
+        tracing::debug!(sql = %sql, "run_query");
         if !is_readonly_sql(sql) {
             return Err(DuckAnythingError::ReadOnlyViolation(sql.to_string()));
         }
@@ -255,6 +280,7 @@ impl Engine {
                     // is still usable, only the query was cancelled.
                     Ok((_result, conn)) => {
                         guard.conn = Some(conn);
+                        tracing::warn!(timeout_secs = timeout, rebuilt = false, "query timed out");
                         Err(DuckAnythingError::Timeout(timeout))
                     }
                     // The worker is stuck even after interrupt: discard the
@@ -262,6 +288,7 @@ impl Engine {
                     // drop it when it eventually finishes) and rebuild.
                     Err(_) => {
                         drop(guard);
+                        tracing::warn!(timeout_secs = timeout, rebuilt = true, "query timed out; rebuilding connection");
                         self.rebuild()?;
                         Err(DuckAnythingError::Timeout(timeout))
                     }
@@ -270,6 +297,7 @@ impl Engine {
             // Worker panicked; the connection was dropped during unwind.
             Err(RecvTimeoutError::Disconnected) => {
                 drop(guard);
+                tracing::error!("query worker thread panicked; rebuilding connection");
                 self.rebuild()?;
                 Err(DuckAnythingError::Sql(
                     "query worker thread panicked".to_string(),
@@ -329,7 +357,13 @@ impl Engine {
     /// in an unrecoverable state.
     fn rebuild(&self) -> Result<(), DuckAnythingError> {
         let mut guard = self.inner.lock().unwrap();
-        let new_conn = Connection::open_in_memory()?;
+        let new_conn = match Connection::open_in_memory() {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::warn!(error = %e, "rebuild failed");
+                return Err(e.into());
+            }
+        };
         let interrupt = new_conn.interrupt_handle();
         let mounted = guard.mounted.clone();
         for m in &mounted {
@@ -339,10 +373,14 @@ impl Engine {
                 m.format.read_fn(),
                 sql_string_literal(&m.file_path.to_string_lossy())
             );
-            new_conn.execute_batch(&sql)?;
+            if let Err(e) = new_conn.execute_batch(&sql) {
+                tracing::warn!(error = %e, view = %m.view_name, "rebuild failed");
+                return Err(e.into());
+            }
         }
         guard.conn = Some(new_conn);
         guard.interrupt = interrupt;
+        tracing::info!(views = mounted.len(), "engine connection rebuilt");
         Ok(())
     }
 }

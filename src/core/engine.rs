@@ -124,7 +124,7 @@ pub struct Engine {
 impl Engine {
     /// Opens an in-memory DuckDB connection with the given configuration.
     pub fn new(config: &Config) -> Result<Self, DuckAnythingError> {
-        let conn = Connection::open_in_memory()?;
+        let conn = open_connection(config.allow_dir.as_deref())?;
         let interrupt = conn.interrupt_handle();
         Ok(Self {
             inner: Mutex::new(EngineInner {
@@ -380,11 +380,11 @@ impl Engine {
     /// in an unrecoverable state.
     fn rebuild(&self) -> Result<(), DuckAnythingError> {
         let mut guard = self.inner.lock().unwrap();
-        let new_conn = match Connection::open_in_memory() {
+        let new_conn = match open_connection(self.allow_dir.as_deref()) {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::warn!(error = %e, "rebuild failed");
-                return Err(e.into());
+                return Err(e);
             }
         };
         let interrupt = new_conn.interrupt_handle();
@@ -780,6 +780,36 @@ fn rest_is_empty_or_comment(rest: &[u8]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Wraps `s` in single quotes, doubling embedded quotes (SQL string literal).
+/// Opens the in-memory DuckDB connection.
+///
+/// With `allow_dir` set, file access is locked down at the DuckDB level, not
+/// only in `load_file`: otherwise table functions inside `run_sql`
+/// (`read_text`, `read_csv`, `glob`, ...) can read any path on the host.
+/// Order matters: `allowed_directories` can only be set while external access
+/// is still enabled, and `lock_configuration` stops later `SET`s from undoing it.
+fn open_connection(allow_dir: Option<&Path>) -> Result<Connection, DuckAnythingError> {
+    let conn = Connection::open_in_memory()?;
+    if let Some(dir) = allow_dir {
+        let dir = dir.canonicalize().map_err(|e| {
+            DuckAnythingError::PathValidation(format!(
+                "cannot canonicalize allow_dir '{}': {e}",
+                dir.display()
+            ))
+        })?;
+        let mut dir = dir.to_string_lossy().into_owned();
+        if !dir.ends_with('/') {
+            dir.push('/');
+        }
+        conn.execute_batch(&format!(
+            "SET allowed_directories = [{}];
+             SET enable_external_access = false;
+             SET lock_configuration = true;",
+            sql_string_literal(&dir)
+        ))?;
+    }
+    Ok(conn)
+}
+
 fn sql_string_literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
@@ -904,6 +934,59 @@ mod tests {
             })?;
             conn.execute_batch(sql)?;
             Ok(())
+        }
+    }
+
+    /// Engine restricted to `allowed`, plus a secret file outside it.
+    fn restricted_engine() -> (tempfile::TempDir, tempfile::TempDir, Engine) {
+        let allowed = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(allowed.path().join("data.csv"), "a\n1\n").unwrap();
+        fs::write(outside.path().join("secret.txt"), "TOP-SECRET").unwrap();
+        let config = Config {
+            allow_dir: Some(allowed.path().to_path_buf()),
+            ..Config::default()
+        };
+        let engine = Engine::new(&config).unwrap();
+        (allowed, outside, engine)
+    }
+
+    #[test]
+    fn allow_dir_blocks_table_function_reads_outside() {
+        // load_file 校验了 allow_dir，但 run_sql 里的 read_text / read_csv / glob
+        // 等表函数可以直接读任意路径，必须在 DuckDB 层面锁住。
+        let (allowed, outside, engine) = restricted_engine();
+        engine
+            .mount_file(&allowed.path().join("data.csv"), None)
+            .unwrap();
+        assert_eq!(
+            engine.run_query("SELECT a FROM data").unwrap().rows,
+            vec![vec![Cell::Int(1)]]
+        );
+
+        let secret = outside.path().join("secret.txt");
+        let secret = secret.to_string_lossy();
+        let dir = outside.path().to_string_lossy();
+        for sql in [
+            format!("SELECT content FROM read_text('{secret}')"),
+            format!("SELECT * FROM read_csv('{secret}', header=false)"),
+            format!("SELECT file FROM glob('{dir}/*')"),
+        ] {
+            let res = engine.run_query(&sql);
+            assert!(res.is_err(), "must be rejected: {sql} -> {res:?}");
+        }
+    }
+
+    #[test]
+    fn allow_dir_settings_cannot_be_reverted_from_sql() {
+        let (_allowed, _outside, engine) = restricted_engine();
+        // run_sql 只放行 SELECT/WITH/FROM，但锁定本身也不应依赖这条前缀规则：
+        // 即使拿到原始连接，也不能把白名单放宽或解锁。
+        for sql in [
+            "SET allowed_directories = ['/']",
+            "SET lock_configuration = false",
+        ] {
+            assert!(engine.execute_script(sql).is_err(), "must be rejected: {sql}");
         }
     }
 
